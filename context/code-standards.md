@@ -128,6 +128,8 @@ export async function POST(req: NextRequest) {
 - Always return `{ success: boolean, data?: T, error?: string }`
 - Never return raw data without the success wrapper
 
+**Exception — browser-navigation endpoints:** routes the browser is redirected to directly (not called via `fetch`) — the OAuth callback (`app/api/auth/callback/route.ts`) and the session refresh route (`app/api/auth/refresh/route.ts`, delegated entirely to `createRefreshAuthRouter()`) — return a redirect or the SDK's own `Response`, not the JSON envelope. There's no caller to parse `{ success, data, error }`; the redirect target (`/dashboard` vs `/login?error=oauth`) *is* the result. Still wrap in try/catch and log with the route prefix.
+
 ---
 
 ## Server Actions
@@ -158,6 +160,8 @@ export async function saveProfile(formData: ProfileFormData) {
 - Every Server Action returns `{ success: boolean, error?: string }`
 - Always call `revalidatePath` after mutations that affect page data
 - Never throw from Server Actions — always return the error
+
+**Exception — actions bound directly to `<form action={fn}>`:** React requires the form `action` prop to type as `(formData: FormData) => void | Promise<void>` — a `{ success, error }` return breaks that binding. `actions/auth.ts`'s `signInWithGoogle`/`signInWithGithub`/`signOut` all end in `redirect()` (success and failure alike — failure redirects to `/login?error=oauth`), so the redirect destination carries the result instead of a return value. `redirect()` must be called **outside** any `try/catch` — it throws internally by design (`NEXT_REDIRECT`), and a surrounding `catch` would swallow it. This exception applies only to actions that always end in a redirect; anything with a UI-visible result (e.g. `saveProfile`) keeps the `{ success, error }` contract above.
 
 ---
 
@@ -222,14 +226,20 @@ const insforge = await createInsforgeServer();
 
 All PostHog events must use these exact event names. Never invent new event names without adding them here first.
 
-| Event                | When                                       | Key Properties             |
-| -------------------- | ------------------------------------------ | -------------------------- |
-| `job_search_started` | Find Jobs button clicked                   | userId, jobTitle, location |
-| `job_found`          | Each job discovered and saved              | userId, source, matchScore |
-| `profile_completed`  | User saves complete profile for first time | userId                     |
-| `company_researched` | Company research dossier generated         | userId, jobId, company     |
+| Event                      | When                                                     | Key Properties              |
+| --------------------------- | --------------------------------------------------------- | ---------------------------- |
+| `cta_clicked`              | Marketing CTA link clicked (Navbar/Hero/CtaBanner)       | location, label, destination |
+| `oauth_sign_in_started`    | OAuth button clicked, before redirect                    | provider                    |
+| `oauth_sign_in_completed`  | OAuth code exchange succeeds in the callback route       | userId, provider            |
+| `oauth_sign_in_failed`     | `/login?error=oauth` renders (init or callback failure)  | —                            |
+| `job_search_started`       | Find Jobs button clicked                                 | userId, jobTitle, location  |
+| `job_found`                | Each job discovered and saved                            | userId, source, matchScore  |
+| `profile_completed`        | User saves complete profile for first time               | userId                       |
+| `company_researched`       | Company research dossier generated                       | userId, jobId, company      |
 
-These four events are the only events in this project. Do not add more without updating this list first.
+These eight events are the only events in this project. Do not add more without updating this list first.
+
+`cta_clicked`, `oauth_sign_in_started`, `oauth_sign_in_completed`, and `oauth_sign_in_failed` are live as of Phase 1 (homepage + auth). The remaining four are reserved for the Phase 2-4 features that emit them and aren't implemented yet.
 
 `job_found` powers the Jobs Found Over Time and Match Score Distribution dashboard charts.
 `company_researched` powers the Company Research Activity dashboard chart.
@@ -250,8 +260,8 @@ All environment variables defined in `.env.local` for development. Never hardcod
 | `OPENAI_API_KEY`                | agent/ functions       |
 | `ADZUNA_APP_ID`                 | lib/adzuna.ts          |
 | `ADZUNA_APP_KEY`                | lib/adzuna.ts          |
-| `NEXT_PUBLIC_POSTHOG_KEY`       | lib/posthog-client.ts  |
-| `NEXT_PUBLIC_POSTHOG_HOST`      | lib/posthog-client.ts  |
+| `NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` | instrumentation-client.ts, lib/posthog-server.ts |
+| `NEXT_PUBLIC_POSTHOG_HOST`      | instrumentation-client.ts, lib/posthog-server.ts |
 
 `NEXT_PUBLIC_` prefix means the variable is exposed to the browser. Never add `NEXT_PUBLIC_` to secret keys.
 

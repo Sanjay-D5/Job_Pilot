@@ -65,6 +65,12 @@
   --color-linkedin-light: #dce6f1;
   --color-linkedin-foreground: #ffffff;
 
+  /* Google brand mark — fixed by Google's brand guidelines, not part of the app palette */
+  --color-google-blue: #4285f4;
+  --color-google-green: #34a853;
+  --color-google-yellow: #fbbc05;
+  --color-google-red: #ea4335;
+
   /* Dark overlays */
   --color-overlay: #111827;
   --color-overlay-dark: #131316;

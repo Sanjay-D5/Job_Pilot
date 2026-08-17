@@ -10,6 +10,7 @@ export function Footer() {
             src="/logo.png"
             alt="JobPilot"
             fill
+            sizes="112px"
             className="object-contain object-left"
           />
         </Link>
