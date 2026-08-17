@@ -4,6 +4,7 @@ import { Hero } from "@/components/homepage/Hero";
 import { Testimonial } from "@/components/homepage/Testimonial";
 import { Footer } from "@/components/layout/Footer";
 import { Navbar } from "@/components/layout/Navbar";
+import { createInsforgeServer } from "@/lib/insforge-server";
 
 const manageFeatures = [
   {
@@ -43,12 +44,16 @@ const confidenceFeatures = [
   },
 ];
 
-export default function Home() {
+export default async function Home() {
+  const insforge = await createInsforgeServer();
+  const { data } = await insforge.auth.getCurrentUser();
+  const isAuthenticated = Boolean(data.user);
+
   return (
     <>
       <Navbar />
       <main className="flex-1">
-        <Hero />
+        <Hero isAuthenticated={isAuthenticated} />
         <FeatureSection
           heading={
             <>
@@ -80,7 +85,7 @@ export default function Home() {
           reverse
         />
         <Testimonial />
-        <CtaBanner />
+        <CtaBanner isAuthenticated={isAuthenticated} />
       </main>
       <Footer />
     </>

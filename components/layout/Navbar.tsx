@@ -1,5 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
+import { MarketingCta } from "@/components/shared/MarketingCta";
+import { createInsforgeServer } from "@/lib/insforge-server";
 
 const navItems = [
   { label: "Dashboard", href: "/dashboard" },
@@ -7,7 +9,11 @@ const navItems = [
   { label: "Profile", href: "/profile" },
 ];
 
-export function Navbar() {
+export async function Navbar() {
+  const insforge = await createInsforgeServer();
+  const { data } = await insforge.auth.getCurrentUser();
+  const isAuthenticated = Boolean(data.user);
+
   return (
     <header className="w-full border-b border-border bg-surface">
       <div className="mx-auto flex h-16 max-w-360 items-center justify-between px-4 sm:px-6 lg:px-8">
@@ -17,6 +23,7 @@ export function Navbar() {
             alt="JobPilot"
             fill
             priority
+            sizes="128px"
             className="object-contain object-left"
           />
         </Link>
@@ -33,12 +40,12 @@ export function Navbar() {
           ))}
         </nav>
 
-        <Link
-          href="/login"
-          className="inline-flex items-center rounded-md bg-overlay px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-overlay-dark"
-        >
-          Start for free
-        </Link>
+        <MarketingCta
+          href={isAuthenticated ? "/dashboard" : "/login"}
+          label={isAuthenticated ? "Go to Dashboard" : "Start for free"}
+          variant="dark"
+          location="navbar"
+        />
       </div>
     </header>
   );

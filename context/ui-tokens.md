@@ -99,6 +99,12 @@ className="bg-purple-500 text-gray-600"
   --color-linkedin-light: #dce6f1;
   --color-linkedin-foreground: #ffffff;
 
+  /* Google brand mark — fixed by Google's brand guidelines, not part of the app palette */
+  --color-google-blue: #4285f4;
+  --color-google-green: #34a853;
+  --color-google-yellow: #fbbc05;
+  --color-google-red: #ea4335;
+
   /* Dark overlays */
   --color-overlay: #111827;
   --color-overlay-dark: #131316;
@@ -348,3 +354,4 @@ size: 36x36px
 - Match score bars always use color tokens based on score range — never hardcoded colors
 - LinkedIn badge always uses `--linkedin` (#0A66C2) — never generic blue
 - All borders default to `--border` (#E7EAF3) — never use `border-gray-*`
+- Third-party brand marks (LinkedIn, Google, etc.) are the one exception to "never use hex directly" — their colors are fixed by the brand owner, not part of this app's palette, so they still get named `@theme` tokens (`--color-google-blue`, etc.) rather than inline hex in components. If a mark is single-color and can inherit text color (e.g. GitHub's), prefer `fill="currentColor"` over even a token — no brand color to fix at all.

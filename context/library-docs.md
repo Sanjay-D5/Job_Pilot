@@ -32,46 +32,30 @@ Never rely on general training knowledge alone for library APIs — they change 
 
 ### Client vs Server
 
-Two separate instances — never mix them:
+The real package is `@insforge/sdk` — there is no separate `@insforge/ssr` package. SSR helpers live at the `@insforge/sdk/ssr` and `@insforge/sdk/ssr/middleware` subpaths. `createServerClient()`/`createBrowserClient()` read `NEXT_PUBLIC_INSFORGE_URL`/`NEXT_PUBLIC_INSFORGE_ANON_KEY` by default — no need to pass them explicitly.
 
 ```typescript
 // lib/insforge-client.ts — browser context only
-import { createBrowserClient } from "@insforge/ssr";
+import { createBrowserClient } from "@insforge/sdk/ssr";
 
-export const insforge = createBrowserClient(
-  process.env.NEXT_PUBLIC_INSFORGE_URL!,
-  process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY!,
-);
+export const insforge = createBrowserClient();
 ```
 
 ```typescript
 // lib/insforge-server.ts — server context only
-import { createServerClient } from "@insforge/ssr";
 import { cookies } from "next/headers";
+import { createServerClient } from "@insforge/sdk/ssr";
 
-export const createInsforgeServer = async () => {
-  const cookieStore = await cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_INSFORGE_URL!,
-    process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options),
-          );
-        },
-      },
-    },
-  );
-};
+export async function createInsforgeServer() {
+  return createServerClient({ cookies: await cookies() });
+}
 ```
 
 **Rules:**
 
-- Browser client — Client Components, browser-side auth state, realtime subscriptions
-- Server client — Server Components, API routes, Server Actions, agent functions
+- Browser client — Client Components, browser-side auth state, realtime subscriptions. Its `.auth` surface is read-only (`getCurrentUser`, `getProfile`, `getPublicAuthConfig`) — no `signIn*`/`signOut`.
+- Server client (`createServerClient`) — reads the session for Server Components, API routes, agent functions. It cannot write cookies.
+- For anything that mutates the session (sign-in, sign-out, OAuth exchange) — use `createAuthActions()` from `@insforge/sdk/ssr` instead, in a Server Action or Route Handler where cookies can be written. See `actions/auth.ts`.
 - Never use browser client in server context
 - Never use server client in browser context
 
@@ -79,37 +63,76 @@ export const createInsforgeServer = async () => {
 
 ### Auth
 
+Sessions are two cookies: `insforge_access_token` (browser-readable) and `insforge_refresh_token` (httpOnly). `proxy.ts` (not `middleware.ts` — renamed in Next.js 16) calls `updateSession()` from `@insforge/sdk/ssr/middleware` on every request to keep the access token fresh and redirects to `/login` when a protected route has none.
+
 ```typescript
-// Get current user in server context
+// Get current user in server context (Server Components, API routes)
 const insforge = await createInsforgeServer();
-const {
-  data: { user },
-  error,
-} = await insforge.auth.getUser();
-if (!user) redirect("/login");
+const { data, error } = await insforge.auth.getCurrentUser();
+if (!data.user) redirect("/login");
 ```
+
+```typescript
+// actions/auth.ts — sign-in must run server-side so the refresh token
+// lands in an httpOnly cookie, never in browser JS
+"use server";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { createAuthActions } from "@insforge/sdk/ssr";
+
+export async function signInWithGoogle() {
+  const cookieStore = await cookies();
+  const auth = createAuthActions({ cookies: cookieStore });
+  const { data, error } = await auth.signInWithOAuth("google", {
+    redirectTo: new URL("/api/auth/callback", process.env.NEXT_PUBLIC_APP_URL).toString(),
+    skipBrowserRedirect: true,
+  });
+  if (error || !data.url || !data.codeVerifier) throw new Error("OAuth init failed");
+
+  cookieStore.set("insforge_code_verifier", data.codeVerifier, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 600,
+  });
+  redirect(data.url);
+}
+```
+
+The callback route (`app/api/auth/callback/route.ts`) reads the `insforge_code` query param and the `insforge_code_verifier` cookie, calls `createAuthActions({ requestCookies, responseCookies }).exchangeOAuthCode(code, verifier)`, and redirects to `/dashboard`. The refresh route (`app/api/auth/refresh/route.ts`) is just `export const { POST } = createRefreshAuthRouter();`.
+
+`actions/auth.ts`'s `signInWithProvider()` also sets a second cookie, `insforge_oauth_provider` (same options as `insforge_code_verifier`), holding which provider ("google" | "github") was used to start the flow. The callback route reads it back instead of inferring the provider from `user.providers[0]` — that array lists every provider ever linked to the account, not the one used for this specific sign-in, so guessing from it mislabels the `oauth_sign_in_completed` PostHog event for any user with more than one provider linked.
+
+**Rules:**
+
+- `redirect()` must be called **outside** any `try/catch` in a Server Action or Route Handler — it throws internally, and a surrounding `catch` will swallow it.
+- OAuth always starts server-side with `skipBrowserRedirect: true` — never call `signInWithOAuth` from a Client Component for this project's flow.
+- Any PostHog capture in the callback route must be wrapped in Next.js's `after()` (`next/server`), not awaited inline before the redirect — `posthog-node`'s `shutdown()` can reject or block for up to 30s on a slow/unreachable PostHog endpoint, and inline placement would turn that into either a hung redirect or a successful login incorrectly redirected to `/login?error=oauth`.
 
 ---
 
 ### DB Queries
 
+Database methods are namespaced under `.database`, not directly on the client.
+
 ```typescript
 // Read
-const { data, error } = await insforge
+const { data, error } = await insforge.database
   .from("jobs")
   .select("*")
   .eq("user_id", user.id)
   .order("found_at", { ascending: false });
 
 // Insert
-const { data, error } = await insforge
+const { data, error } = await insforge.database
   .from("jobs")
   .insert({ user_id: user.id, title, company, match_score })
   .select()
   .single();
 
 // Update
-const { error } = await insforge
+const { error } = await insforge.database
   .from("jobs")
   .update({ company_research: dossier })
   .eq("id", jobId)
@@ -126,21 +149,17 @@ const { error } = await insforge
 
 ### Storage
 
+`upload()` takes only a path and a `File | Blob` — no options object, no `upsert` flag. Uploading to an existing key always replaces it in place (standard PUT semantics), and the response already includes the URL.
+
 ```typescript
-// Upload file
+// Upload file — wrap a server-side Buffer in a Blob first
 const { data, error } = await insforge.storage
   .from("resumes")
-  .upload(`${userId}/resume.pdf`, fileBuffer, {
-    contentType: "application/pdf",
-    upsert: true, // overwrites existing file
-  });
+  .upload(`${userId}/resume.pdf`, new Blob([pdfBuffer], { type: "application/pdf" }));
+// data: { bucket, key, size, mimeType, uploadedAt, url }
 
-// Get public URL
-const { data } = insforge.storage
-  .from("resumes")
-  .getPublicUrl(`${userId}/resume.pdf`);
-
-const url = data.publicUrl;
+// getPublicUrl() returns a plain string (no API call, no {data} wrapper)
+const url = insforge.storage.from("resumes").getPublicUrl(`${userId}/resume.pdf`);
 ```
 
 **Storage paths:**
@@ -149,9 +168,9 @@ const url = data.publicUrl;
 
 **Rules:**
 
-- Always use `upsert: true` for base resume uploads — overwrites existing file
-- Always save the public URL back to the DB after upload
-- Never write files to disk — always upload buffer directly to storage
+- Uploading to an existing path always replaces it — there is no separate upsert flag to set
+- Always save the returned/public URL back to the DB after upload
+- Never write files to disk — always upload the buffer (wrapped in a `Blob`) directly to storage
 
 ---
 
@@ -549,25 +568,20 @@ const result = JSON.parse(response.choices[0].message.content!);
 
 ### Client Setup (Browser)
 
+The real env var is `NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` (not `NEXT_PUBLIC_POSTHOG_KEY`). Init lives in `instrumentation-client.ts` at the repo root — Next.js 16's native client instrumentation hook, loaded before the app renders — not a `lib/posthog-client.ts` module the app imports.
+
 ```typescript
-// lib/posthog-client.ts
+// instrumentation-client.ts
 import posthog from "posthog-js";
 
-export function initPostHog() {
-  if (typeof window !== "undefined") {
-    posthog.init(process.env.NEXT_PUBLIC_POSTHOG_KEY!, {
-      api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST!,
-      capture_pageview: false, // manual pageview tracking
-    });
-  }
-}
-
-// Capture event client-side
-posthog.capture("job_found", {
-  userId,
-  source: "search",
-  matchScore: score,
+posthog.init(process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN!, {
+  api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST!,
+  defaults: "2026-01-30", // versioned default config — includes autocapture + pageviews
+  capture_exceptions: true,
 });
+
+// Capture event client-side, anywhere after init
+posthog.capture("cta_clicked", { location: "hero", label, destination });
 ```
 
 ### Server Setup
@@ -576,14 +590,15 @@ posthog.capture("job_found", {
 // lib/posthog-server.ts
 import { PostHog } from "posthog-node";
 
-export const createPostHogServer = () =>
-  new PostHog(process.env.NEXT_PUBLIC_POSTHOG_KEY!, {
+export function createPostHogServer() {
+  return new PostHog(process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN!, {
     host: process.env.NEXT_PUBLIC_POSTHOG_HOST!,
     flushAt: 1, // send immediately
     flushInterval: 0, // no batching — Next.js functions are short-lived
   });
+}
 
-// Always use and shutdown in the same function
+// Always create, use, and shutdown within the same request
 const posthog = createPostHogServer();
 posthog.capture({
   distinctId: userId,
@@ -598,9 +613,9 @@ await posthog.shutdown(); // required — ensures event is sent
 - Always call `await posthog.shutdown()` in server-side functions — events are lost without it
 - `flushAt: 1` and `flushInterval: 0` always set on server client
 - Event names must match exactly the list in `code-standards.md`
-- Always include `userId` as a property on every server-side event
-- Call `posthog.identify(userId)` after login on client side
-- Call `posthog.reset()` on logout on client side
+- Always include `userId` as a property on every server-side event that has one — anonymous events (e.g. `oauth_sign_in_failed`) are the only exception
+- `posthog.identify(userId)` is called after login on the client side already, in `instrumentation-client.ts` (runs on every load, keyed off `insforge.auth.getCurrentUser()`) — no per-page call needed
+- Call `posthog.reset()` on logout on client side once a sign-out UI trigger exists (none does yet — `actions/auth.ts`'s `signOut()` has no caller)
 
 ---
 

@@ -22,6 +22,8 @@
 ```
 /
 ├── AGENTS.md
+├── proxy.ts                                → Session refresh + route protection (Next.js 16 — not middleware.ts)
+├── instrumentation-client.ts               → PostHog browser init (Next.js 16 client instrumentation hook — not lib/posthog-client.ts)
 ├── context/
 │   ├── project-overview.md
 │   ├── architecture.md
@@ -33,13 +35,11 @@
 │   ├── build-plan.md
 │   └── progress-tracker.md
 ├── app/
-│   ├── layout.tsx                          → Root layout, PostHog provider
+│   ├── layout.tsx                          → Root layout (PostHog is initialized via instrumentation-client.ts, not a layout provider)
 │   ├── page.tsx                            → Homepage
 │   ├── (auth)/
-│   │   ├── login/
-│   │   │   └── page.tsx                   → Login page
-│   │   └── callback/
-│   │       └── page.tsx                   → OAuth callback handler
+│   │   └── login/
+│   │       └── page.tsx                   → Login page
 │   ├── dashboard/
 │   │   └── page.tsx                       → Main dashboard
 │   ├── profile/
@@ -49,6 +49,9 @@
 │   │   └── [id]/
 │   │       └── page.tsx                   → Individual job details page
 │   └── api/
+│       ├── auth/
+│       │   ├── callback/route.ts          → OAuth code exchange (sets session cookies, redirects)
+│       │   └── refresh/route.ts           → Session refresh endpoint (createRefreshAuthRouter)
 │       ├── agent/
 │       │   ├── find/route.ts              → Trigger Adzuna job discovery
 │       │   └── research/route.ts          → Trigger company research agent
@@ -62,10 +65,16 @@
 │   ├── extractor.ts                       → GPT-4o job description extraction + structuring
 │   └── types.ts                           → Agent-specific TypeScript types
 ├── actions/
+│   ├── auth.ts                            → Sign in with Google/GitHub, sign out
 │   ├── profile.ts                         → Profile save + update
 │   └── jobs.ts                            → Job status updates
 ├── components/
 │   ├── ui/                                → shadcn/ui components only
+│   ├── auth/
+│   │   ├── OAuthSubmitButton.tsx          → Client component (useFormStatus) for OAuth form buttons
+│   │   └── OAuthErrorNotice.tsx           → Client component, renders ?error=oauth banner + fires oauth_sign_in_failed
+│   ├── shared/
+│   │   └── MarketingCta.tsx               → Client component, tracked marketing CTA link (cta_clicked event)
 │   ├── layout/
 │   │   ├── Navbar.tsx
 │   │   └── Footer.tsx
@@ -99,8 +108,7 @@
 │   ├── browserbase.ts                     → Browserbase session creation + management
 │   ├── stagehand.ts                       → Stagehand initialisation with Browserbase session
 │   ├── adzuna.ts                          → Adzuna API client
-│   ├── posthog-client.ts                  → PostHog browser client
-│   ├── posthog-server.ts                  → PostHog server client
+│   ├── posthog-server.ts                  → PostHog server client (posthog-node, flushAt: 1)
 │   └── utils.ts                           → Shared utility functions
 └── types/
     └── index.ts                           → Global TypeScript types
@@ -293,47 +301,33 @@ Access: authenticated users only, own files only.
 - Methods: Google OAuth, GitHub OAuth
 - Protected routes: /dashboard, /profile, /find-jobs, /find-jobs/[id]
 - Public routes: /, /login
-- Middleware in middleware.ts checks session on every protected route
+- `proxy.ts` (Next.js 16 renamed `middleware.ts` → `proxy.ts`) refreshes the session via `updateSession()` on every request and redirects to /login when a protected route has no access token
+- OAuth is initiated server-side (`actions/auth.ts`, `skipBrowserRedirect: true`) so the refresh token lands in an httpOnly cookie, not in browser JS — the code is exchanged in `app/api/auth/callback/route.ts`
 - On login → redirect to /dashboard
 
 ---
 
 ## InsForge Client Pattern
 
-Two separate InsForge instances — never mix them:
+The real package is `@insforge/sdk` — there is no separate `@insforge/ssr` package. SSR helpers are subpath exports: `@insforge/sdk/ssr` and `@insforge/sdk/ssr/middleware`. Sessions are two cookies (`insforge_access_token`, browser-readable; `insforge_refresh_token`, httpOnly), not a single opaque session object.
 
 ```typescript
 // lib/insforge-client.ts
-// Browser-side — used in client components for auth state
-import { createBrowserClient } from "@insforge/ssr";
-export const insforge = createBrowserClient(
-  process.env.NEXT_PUBLIC_INSFORGE_URL!,
-  process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY!,
-);
+// Browser-side — consumes the existing SSR session (no auth mutations)
+import { createBrowserClient } from "@insforge/sdk/ssr";
+export const insforge = createBrowserClient();
 
 // lib/insforge-server.ts
-// Server-side — used in API routes, Server Actions, agent code
-import { createServerClient } from "@insforge/ssr";
+// Server-side — used in Server Components, API routes, Server Actions, agent code
 import { cookies } from "next/headers";
+import { createServerClient } from "@insforge/sdk/ssr";
 
-export const createInsforgeServer = async () => {
-  const cookieStore = await cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_INSFORGE_URL!,
-    process.env.NEXT_PUBLIC_INSFORGE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => cookieStore.getAll(),
-        setAll: (cookiesToSet) => {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options),
-          );
-        },
-      },
-    },
-  );
-};
+export async function createInsforgeServer() {
+  return createServerClient({ cookies: await cookies() });
+}
 ```
+
+For Server Actions and Route Handlers that mutate the session (sign-in, sign-out, OAuth exchange), use `createAuthActions()` instead — it can write cookies, which `createServerClient()` cannot. See `library-docs.md`'s Auth section for the full pattern.
 
 ---
 

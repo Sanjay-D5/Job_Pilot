@@ -22,13 +22,49 @@ After building any component — update this file with the component name, file 
 
 `components/layout/Navbar.tsx`
 
-Top navbar used on every page. White background, bottom border, 64px height, max-w-360 (1440px) centered container.
+Top navbar used on every page. White background, bottom border, 64px height, max-w-360 (1440px) centered container. **Async Server Component** — calls `createInsforgeServer()` + `insforge.auth.getCurrentUser()` itself (self-contained, so it works unchanged on any future page that renders it) to decide its CTA state.
 
 - Container: `w-full border-b border-border bg-surface`
 - Inner: `mx-auto flex h-16 max-w-360 items-center justify-between px-4 sm:px-6 lg:px-8`
-- Logo: `/logo.png` via `next/image` with `fill`, wrapped in `relative h-8 w-32`
+- Logo: `/logo.png` via `next/image` with `fill sizes="128px"`, wrapped in `relative h-8 w-32` — `sizes` is required on every `fill` image or Next logs a console warning; size the string to the fixed container width (128px here, 112px for Footer's `h-7 w-28`)
 - Nav links (hidden below `md`): `text-sm font-medium text-text-dark transition-colors hover:text-accent`
-- CTA button ("dark" variant — see below): `inline-flex items-center rounded-md bg-overlay px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-overlay-dark`
+- CTA button: `<MarketingCta variant="dark" location="navbar">` (see "Marketing buttons" below) — label/href toggle: "Start for free" → `/login` when unauthenticated, "Go to Dashboard" → `/dashboard` when authenticated. No sign-out UI here yet (out of Feature 02's scope — `actions/auth.ts`'s `signOut()` exists but has no trigger surface yet).
+
+### Login page
+
+`app/(auth)/login/page.tsx`
+
+Centered auth card, not built from the marketing "dark CTA" pattern below — this is an in-app form surface, so it uses the standard card + outline-button tokens instead.
+
+- Page: `flex min-h-screen flex-1 items-center justify-center bg-background px-4 py-12`
+- Card: `w-full max-w-sm rounded-2xl border border-border bg-surface p-6 shadow-[0px_1px_3px_rgba(0,0,0,0.1),0px_1px_2px_-1px_rgba(0,0,0,0.1)]` — the standard card shadow from ui-rules.md, written out explicitly since no shadow utility class is defined for it yet
+- Heading block: centered logo (`relative h-8 w-32`, `sizes="128px"`), `text-lg font-semibold text-text-primary` title, `text-sm text-text-secondary` subtitle
+- Error banner (`?error=oauth`): `<OAuthErrorNotice>` (`components/auth/OAuthErrorNotice.tsx`) — client component, same classes as before (`rounded-md border border-border bg-surface-secondary px-3 py-2 text-sm text-text-secondary`), now also fires the `oauth_sign_in_failed` PostHog event on mount via `useEffect`
+- Already-authenticated visitors are redirected to `/dashboard` server-side before the card renders (`insforge.auth.getCurrentUser()` + `redirect()` at the top of the page component) — `/login` never shows the OAuth buttons to a signed-in user
+- OAuth buttons: `<OAuthSubmitButton>` (see its own entry below) rendered inside each `<form action={signInWithGoogle}>`/`<form action={signInWithGithub}>`
+- Brand icons: `lucide-react@1.31.0` has no `Github` export and no Google icon (brand icons were dropped from the package). Both are inlined as local (non-exported) `GoogleIcon`/`GithubIcon` SVG functions in the page file, `className="size-4"`, using verified official path data (Google's 4-color "G", GitHub's mark) — not hand-drawn. GitHub's uses `fill="currentColor"` (inherits button text color). Google's four paths use `className="fill-google-blue"` etc. — dedicated `@theme` tokens in `globals.css`/`ui-tokens.md`, not raw hex, following the same pattern as `--color-linkedin`: third-party brand colors still get named tokens even though they're not part of the app's own palette. If a second page ever needs these icons, promote them to a shared file then.
+
+### OAuthSubmitButton
+
+`components/auth/OAuthSubmitButton.tsx`
+
+Last updated: 2026-08-17
+
+The outline-button pattern (see "Marketing buttons" below) adapted into a reusable client component, needed because `useFormStatus` only works in a component nested inside the `<form>` it reads state from — the page/Server Component rendering the `<form>` can't call the hook itself.
+
+| Property | Class |
+| --- | --- |
+| Background | `bg-surface` |
+| Border | `border border-border` |
+| Border radius | `rounded-md` |
+| Text — default | `text-text-primary`, `text-sm font-medium` |
+| Spacing | `px-4 py-2`, `gap-2` between icon and label |
+| Hover state | `hover:bg-surface-secondary` |
+| Disabled state | `disabled:cursor-not-allowed disabled:opacity-60`, applied while `pending` |
+| Shadow | none |
+| Accent usage | none — this is the outline/secondary variant, not the primary purple button |
+
+**Pattern notes:** Full-width (`w-full justify-center`) — this variant is only used stacked in a narrow card, unlike the marketing outline button which sits inline next to a dark button. Props are `{ icon: ReactNode; label: string }`; while `pending` (via `useFormStatus`), the button disables and its label swaps to "Redirecting…" instead of rendering a spinner. `"use client"` is required — this is the only client component in the auth flow; everything else (`login/page.tsx`, `Navbar`) stays a Server Component. Reuse this for any future button that submits a form-bound Server Action ending in `redirect()`, not just OAuth — write a new component only if the pending-state treatment needs to differ (e.g. an icon-only spinner instead of a text swap).
 
 ### Footer
 
@@ -42,11 +78,11 @@ Top navbar used on every page. White background, bottom border, 64px height, max
 
 ### Marketing buttons ("dark" / "outline" pattern)
 
-No shared component — small enough to inline (used in Navbar, Hero, CtaBanner). If a 3rd style variant is ever needed, promote to a shared component then.
+`components/shared/MarketingCta.tsx` — promoted from inline markup to a shared **client component** (used in Navbar, Hero, CtaBanner) so every marketing CTA fires the `cta_clicked` PostHog event on click without duplicating the handler three times. Props: `{ href, label, variant: "dark" | "outline", location: "navbar" | "hero" | "cta_banner", icon?: boolean }`. `location` + `label` + `destination` (the resolved `href`) go on the event as properties. If a 3rd style variant is ever needed, extend `variantClasses` in the same file rather than forking a new component.
 
-- **Dark (primary marketing CTA):** `inline-flex items-center gap-1.5 rounded-md bg-overlay px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-overlay-dark` — uses `--color-overlay` (#111827) as the near-black button fill, not `--color-accent`. The purple accent token is reserved for in-app primary actions per ui-rules.md; the marketing site in the design uses a dark/near-black CTA instead, so `overlay`/`overlay-dark` tokens were reused for this rather than inventing a new one.
+- **Dark (primary marketing CTA):** `inline-flex items-center gap-1.5 rounded-md bg-overlay px-4 py-2 text-sm font-medium text-surface transition-colors hover:bg-overlay-dark` — uses `--color-overlay` (#111827) as the near-black button fill, not `--color-accent`. The purple accent token is reserved for in-app primary actions per ui-rules.md; the marketing site in the design uses a dark/near-black CTA instead, so `overlay`/`overlay-dark` tokens were reused for this rather than inventing a new one. (Navbar's single dark CTA now also carries `gap-1.5` for consistency — a no-op visually since it has no icon and only one flex child.)
 - **Outline (secondary marketing CTA):** `inline-flex items-center rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-secondary`
-- Trailing icon on the dark button: `lucide-react` `ChevronRight`, `className="size-4"`
+- Trailing icon on the dark button: `lucide-react` `ChevronRight`, `className="size-4"`, rendered when `icon` prop is `true` (Hero/CtaBanner's "Get Started" button only — Navbar's CTA has no icon)
 
 ### Hero
 
