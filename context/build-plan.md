@@ -70,7 +70,6 @@ All InsForge tables and storage bucket created before any data is written.
 - Create `profiles` table with all columns from architecture.md
 - Create `agent_runs` table
 - Create `jobs` table with all columns including:
-  - tailored fields
   - company_research jsonb column
   - source values: 'search' | 'url'
 - Create `agent_logs` table
